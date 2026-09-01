@@ -13,6 +13,8 @@
   monta vía `ChatwootApp.extensions` cuando existe la carpeta ([`lib/chatwoot_app.rb`](lib/chatwoot_app.rb)).
 - **Config de instalación** (`config/installation_config.yml`, `config/features.yml`) — semillas de
   `InstallationConfig` y feature flags por defecto, cargadas por `ConfigLoader`.
+- **Mega Stack** (`docs/mega-stack/`) — clon de terceros (no código propio) con el manual de
+  despliegue/operación de Mega. Detalle: [`docs/mega-stack-reference.md`](docs/mega-stack-reference.md).
 
 ## 2. Flujo del gating Enterprise (lo modificado por el fork)
 `ChatwootHub.pricing_plan` (lee `INSTALLATION_PRICING_PLAN` de la DB, default `enterprise`) →
@@ -33,6 +35,7 @@ nunca se apaga nada → `Account#enabled_features` devuelve las premium → jbui
 | Cómo se resuelve `enabled_features` de una cuenta | [`app/models/concerns/featurable.rb`](app/models/concerns/featurable.rb) |
 | Límites de agentes/inboxes | [`enterprise/app/models/enterprise/account.rb`](enterprise/app/models/enterprise/account.rb) + `ChatwootApp.max_limit` |
 | Carga de config a la DB (upsert vs solo-nuevo) | [`lib/config_loader.rb`](lib/config_loader.rb) |
+| Manual/docs de despliegue y operación de Mega (WABA, TikTok, SSO, API, etc.) | [`docs/mega-stack-reference.md`](docs/mega-stack-reference.md) |
 
 ## 4. Gotchas / verdades no-obvias
 - Features EE presentes pero apagadas en un install → el plan es `community` → el reconciliador diario

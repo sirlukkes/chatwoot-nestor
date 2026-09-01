@@ -1,0 +1,735 @@
+version: "3.7"
+
+## ───────────────────────────────────────────────────────────────
+## Chatwoot – Docker Swarm con Sidekiq dividido en 5 workers
+## ───────────────────────────────────────────────────────────────
+## Estrategia de colas:
+##   Worker 1 (critical): critical, high, default
+##   Worker 2 (events):   events
+##   Worker 3 (whatsapp history): whatsapp_history_sync
+##   Worker 4 (whatsapp): whatsapp
+##   Worker 5 (medium):   medium, mailers, action_mailbox_routing, scheduled_messages
+##   Worker 6 (low):      low, scheduled_jobs, deferred, purgable, housekeeping,
+##                         async_database_migration, bulk_reindex_low,
+##                         active_storage_analysis, active_storage_purge,
+##                         action_mailbox_incineration
+## ───────────────────────────────────────────────────────────────
+
+services:
+
+## --------------------------- CHATWOOT APP --------------------------- ##
+
+  chatwoot_app:
+    image: sendingtk/chatwoot:v4.20.6 ## Versão do Chatwoot
+    command: bundle exec rails s -p 3000 -b 0.0.0.0
+
+    volumes:
+      - chatwoot_storage:/app/storage ## Arquivos de conversa
+
+    networks:
+      - mired ## Nome da rede interna
+
+    environment:
+    ## 🏢 Nome da Empresa
+      - INSTALLATION_NAME=mega
+
+    ## 🔐 Secret key
+      - SECRET_KEY_BASE=ca68dcd674b1e9e460671be221c30f30
+
+    ## 💬 Url Chatwoot
+      - FRONTEND_URL=https://mega.dominio.com
+      - FORCE_SSL=true
+
+    ## 🌍 Idioma/Localização padrão
+      - DEFAULT_LOCALE=pt_BR
+      - TZ=America/Sao_Paulo
+
+    ## 🧑‍💻 Dados do Redis
+      - REDIS_URL=redis://chatwoot_redis:6379
+
+    ## 🗄️ Dados do Postgres
+      - POSTGRES_HOST=pgvector
+      - POSTGRES_USERNAME=postgres
+      - POSTGRES_PASSWORD=password ## Senha do postgres
+      - POSTGRES_DATABASE=chatwoot
+
+    ## 🏠 Armazenamento
+      - ACTIVE_STORAGE_SERVICE=local ## use s3_compatible para MinIO
+
+    ## 📧 Dados do SMTP
+      - MAILER_SENDER_EMAIL=soporte@ejemplo.com <soporte@ejemplo.com> ## Email remitente
+      - SMTP_DOMAIN=ejemplo.com ## Dominio del email
+      - SMTP_ADDRESS=smtp.ejemplo.net ## Host SMTP
+      - SMTP_PORT=465 ## Puerto SMTP
+      - SMTP_SSL=true ## true si usas 465 (SSL) | false si usas 587 (STARTTLS)
+      - SMTP_USERNAME=soporte@ejemplo.com ## Usuario SMTP
+      - SMTP_PASSWORD=MyS3gur0P@ssw0rd! ## Contraseña ficticia SMTP
+      - SMTP_AUTHENTICATION=login ## Tipo de autenticación
+      - SMTP_ENABLE_STARTTLS_AUTO=true ## Se usa cuando el puerto es 587
+      - SMTP_OPENSSL_VERIFY_MODE=peer ## Verificación de certificado SSL
+      - MAILER_INBOUND_EMAIL_DOMAIN=soporte@ejemplo.com ## Dominio para inbound
+
+    ## ⚙️ Melhorias
+      - RACK_TIMEOUT_SERVICE_TIMEOUT=0
+      - WEB_CONCURRENCY=2
+      - ENABLE_RACK_ATTACK=false
+      - EVENT_DISPATCHER_IN_MAIN_SIDEKIQ=false
+      - WHATSAPP_HISTORY_SYNC_IN_MAIN_SIDEKIQ=false
+
+    ## ⚡ Outras configurações
+      - NODE_ENV=production
+      - RAILS_ENV=production
+      - INSTALLATION_ENV=docker
+      - RAILS_LOG_TO_STDOUT=true
+      - USE_INBOX_AVATAR_FOR_BOT=true
+      - ENABLE_ACCOUNT_SIGNUP=false
+      - WEBHOOKS_TRIGGER_TIMEOUT=40
+      - EVOLUTION_API_URL=https://api.evolution.example.com
+      - EVOLUTION_ADMIN_TOKEN=exampletoken1234567890
+      - EVOLUTION_PUBLIC_S3=false
+      - WAHA_API_URL=https://waha.example.com
+      - WAHA_ADMIN_TOKEN=exampletoken1234567890
+      - UAZAPI_API_URL=https://demo.uazapi.com
+      - UAZAPI_ADMIN_TOKEN=exampletoken1234567890
+      - SSO=false
+
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1024M
+      labels:
+        - traefik.enable=true
+        - traefik.http.routers.chatwoot_app.rule=Host(`mega.dominio.com`)
+        - traefik.http.routers.chatwoot_app.entrypoints=websecure
+        - traefik.http.routers.chatwoot_app.tls.certresolver=letsencryptresolver
+        - traefik.http.routers.chatwoot_app.priority=1
+        - traefik.http.routers.chatwoot_app.service=chatwoot_app
+        - traefik.http.services.chatwoot_app.loadbalancer.server.port=3000
+        - traefik.http.services.chatwoot_app.loadbalancer.passHostHeader=true
+        - traefik.http.middlewares.sslheader.headers.customrequestheaders.X-Forwarded-Proto=https
+        - traefik.http.routers.chatwoot_app.middlewares=sslheader
+
+## --------------------------- SIDEKIQ WORKER 1 – CRITICAL --------------------------- ##
+## Procesa: mensajes en tiempo real, enrutamiento de conversaciones,
+## webhooks entrantes y asignaciones. EventDispatcherJob queda aislado
+## en el worker events para no bloquear el realtime del UI.
+## Colas: critical, high, default
+## ------------------------------------------------------------------------------- ##
+
+  chatwoot_sidekiq_critical:
+    image: sendingtk/chatwoot:v4.20.6 ## Versão do Chatwoot
+    command: bundle exec sidekiq -q critical -q high -q default -c 15
+
+    volumes:
+      - chatwoot_storage:/app/storage ## Arquivos de conversa
+
+    networks:
+      - mired ## Nome da rede interna
+
+    environment:
+    ## 🏢 Nome da Empresa
+      - INSTALLATION_NAME=mega
+
+    ## 🔐 Secret key
+      - SECRET_KEY_BASE=ca68dcd674b1e9e460671be221c30f30
+
+    ## 💬 Url Chatwoot
+      - FRONTEND_URL=https://mega.dominio.com
+      - FORCE_SSL=true
+
+    ## 🌍 Idioma/Localização padrão
+      - DEFAULT_LOCALE=pt_BR
+      - TZ=America/Sao_Paulo
+
+    ## 🧑‍💻 Dados do Redis
+      - REDIS_URL=redis://chatwoot_redis:6379
+
+    ## 🗄️ Dados do Postgres
+      - POSTGRES_HOST=pgvector
+      - POSTGRES_USERNAME=postgres
+      - POSTGRES_PASSWORD=password ## Senha do postgres
+      - POSTGRES_DATABASE=chatwoot
+
+    ## 🏠 Armazenamento
+      - ACTIVE_STORAGE_SERVICE=local ## use s3_compatible para MinIO
+
+    ## 📧 Dados do SMTP
+      - MAILER_SENDER_EMAIL=soporte@ejemplo.com <soporte@ejemplo.com> ## Email remitente
+      - SMTP_DOMAIN=ejemplo.com ## Dominio del email
+      - SMTP_ADDRESS=smtp.ejemplo.net ## Host SMTP
+      - SMTP_PORT=465 ## Puerto SMTP
+      - SMTP_SSL=true ## true si usas 465 (SSL) | false si usas 587 (STARTTLS)
+      - SMTP_USERNAME=soporte@ejemplo.com ## Usuario SMTP
+      - SMTP_PASSWORD=MyS3gur0P@ssw0rd! ## Contraseña ficticia SMTP
+      - SMTP_AUTHENTICATION=login ## Tipo de autenticación
+      - SMTP_ENABLE_STARTTLS_AUTO=true ## Se usa cuando el puerto es 587
+      - SMTP_OPENSSL_VERIFY_MODE=peer ## Verificación de certificado SSL
+      - MAILER_INBOUND_EMAIL_DOMAIN=soporte@ejemplo.com ## Dominio para inbound
+
+    ## ⚙️ Melhorias
+      - SIDEKIQ_CONCURRENCY=15
+      - RACK_TIMEOUT_SERVICE_TIMEOUT=0
+      - RAILS_MAX_THREADS=15
+      - ENABLE_RACK_ATTACK=false
+      - EVENT_DISPATCHER_IN_MAIN_SIDEKIQ=false
+      - WHATSAPP_HISTORY_SYNC_IN_MAIN_SIDEKIQ=false
+
+    ## ⚡ Outras configurações
+      - NODE_ENV=production
+      - RAILS_ENV=production
+      - INSTALLATION_ENV=docker
+      - RAILS_LOG_TO_STDOUT=true
+      - USE_INBOX_AVATAR_FOR_BOT=true
+      - ENABLE_ACCOUNT_SIGNUP=false
+      - WEBHOOKS_TRIGGER_TIMEOUT=40
+      - EVOLUTION_API_URL=https://api.evolution.example.com
+      - EVOLUTION_ADMIN_TOKEN=exampletoken1234567890
+      - EVOLUTION_PUBLIC_S3=false
+      - WAHA_API_URL=https://waha.example.com
+      - WAHA_ADMIN_TOKEN=exampletoken1234567890
+      - UAZAPI_API_URL=https://demo.uazapi.com
+      - UAZAPI_ADMIN_TOKEN=exampletoken1234567890
+      - SSO=false
+
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1024M
+
+## --------------------------- SIDEKIQ WORKER 2 – EVENTS --------------------------- ##
+## Procesa: EventDispatcherJob (webhooks salientes, automations,
+## notifications, reporting y campañas) fuera de critical para proteger
+## el realtime del UI.
+## Colas: events
+## ------------------------------------------------------------------------------- ##
+
+  chatwoot_sidekiq_events:
+    image: sendingtk/chatwoot:v4.20.6 ## Versão do Chatwoot
+    command: bundle exec sidekiq -q events -c 10
+
+    volumes:
+      - chatwoot_storage:/app/storage ## Arquivos de conversa
+
+    networks:
+      - mired ## Nome da rede interna
+
+    environment:
+    ## 🏢 Nome da Empresa
+      - INSTALLATION_NAME=mega
+
+    ## 🔐 Secret key
+      - SECRET_KEY_BASE=ca68dcd674b1e9e460671be221c30f30
+
+    ## 💬 Url Chatwoot
+      - FRONTEND_URL=https://mega.dominio.com
+      - FORCE_SSL=true
+
+    ## 🌍 Idioma/Localização padrão
+      - DEFAULT_LOCALE=pt_BR
+      - TZ=America/Sao_Paulo
+
+    ## 🧑‍💻 Dados do Redis
+      - REDIS_URL=redis://chatwoot_redis:6379
+
+    ## 🗄️ Dados do Postgres
+      - POSTGRES_HOST=pgvector
+      - POSTGRES_USERNAME=postgres
+      - POSTGRES_PASSWORD=password ## Senha do postgres
+      - POSTGRES_DATABASE=chatwoot
+
+    ## 🏠 Armazenamento
+      - ACTIVE_STORAGE_SERVICE=local ## use s3_compatible para MinIO
+
+    ## 📧 Dados do SMTP
+      - MAILER_SENDER_EMAIL=soporte@ejemplo.com <soporte@ejemplo.com> ## Email remitente
+      - SMTP_DOMAIN=ejemplo.com ## Dominio del email
+      - SMTP_ADDRESS=smtp.ejemplo.net ## Host SMTP
+      - SMTP_PORT=465 ## Puerto SMTP
+      - SMTP_SSL=true ## true si usas 465 (SSL) | false si usas 587 (STARTTLS)
+      - SMTP_USERNAME=soporte@ejemplo.com ## Usuario SMTP
+      - SMTP_PASSWORD=MyS3gur0P@ssw0rd! ## Contraseña ficticia SMTP
+      - SMTP_AUTHENTICATION=login ## Tipo de autenticación
+      - SMTP_ENABLE_STARTTLS_AUTO=true ## Se usa cuando el puerto es 587
+      - SMTP_OPENSSL_VERIFY_MODE=peer ## Verificación de certificado SSL
+      - MAILER_INBOUND_EMAIL_DOMAIN=soporte@ejemplo.com ## Dominio para inbound
+
+    ## ⚙️ Melhorias
+      - SIDEKIQ_CONCURRENCY=10
+      - SIDEKIQ_EVENTS_CONCURRENCY=10
+      - RACK_TIMEOUT_SERVICE_TIMEOUT=0
+      - RAILS_MAX_THREADS=10
+      - ENABLE_RACK_ATTACK=false
+      - EVENT_DISPATCHER_IN_MAIN_SIDEKIQ=false
+      - WHATSAPP_HISTORY_SYNC_IN_MAIN_SIDEKIQ=false
+
+    ## ⚡ Outras configurações
+      - NODE_ENV=production
+      - RAILS_ENV=production
+      - INSTALLATION_ENV=docker
+      - RAILS_LOG_TO_STDOUT=true
+      - USE_INBOX_AVATAR_FOR_BOT=true
+      - ENABLE_ACCOUNT_SIGNUP=false
+      - WEBHOOKS_TRIGGER_TIMEOUT=40
+      - EVOLUTION_API_URL=https://api.evolution.example.com
+      - EVOLUTION_ADMIN_TOKEN=exampletoken1234567890
+      - EVOLUTION_PUBLIC_S3=false
+      - WAHA_API_URL=https://waha.example.com
+      - WAHA_ADMIN_TOKEN=exampletoken1234567890
+      - UAZAPI_API_URL=https://demo.uazapi.com
+      - UAZAPI_ADMIN_TOKEN=exampletoken1234567890
+      - SSO=false
+
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1024M
+
+## --------------------------- SIDEKIQ WORKER 3 – WHATSAPP HISTORY --------------------------- ##
+## Procesa: importaciones históricas pesadas de WhatsApp y descargas
+## de media histórica con baja concurrencia para no saturar DB/Redis.
+## Colas: whatsapp_history_sync
+## ------------------------------------------------------------------------------- ##
+
+  chatwoot_sidekiq_whatsapp_history:
+    image: sendingtk/chatwoot:v4.20.6 ## Versão do Chatwoot
+    command: bundle exec sidekiq -q whatsapp_history_sync -c 2
+
+    volumes:
+      - chatwoot_storage:/app/storage ## Arquivos de conversa
+
+    networks:
+      - mired ## Nome da rede interna
+
+    environment:
+    ## 🏢 Nome da Empresa
+      - INSTALLATION_NAME=mega
+
+    ## 🔐 Secret key
+      - SECRET_KEY_BASE=ca68dcd674b1e9e460671be221c30f30
+
+    ## 💬 Url Chatwoot
+      - FRONTEND_URL=https://mega.dominio.com
+      - FORCE_SSL=true
+
+    ## 🌍 Idioma/Localização padrão
+      - DEFAULT_LOCALE=pt_BR
+      - TZ=America/Sao_Paulo
+
+    ## 🧑‍💻 Dados do Redis
+      - REDIS_URL=redis://chatwoot_redis:6379
+
+    ## 🗄️ Dados do Postgres
+      - POSTGRES_HOST=pgvector
+      - POSTGRES_USERNAME=postgres
+      - POSTGRES_PASSWORD=password ## Senha do postgres
+      - POSTGRES_DATABASE=chatwoot
+
+    ## 🏠 Armazenamento
+      - ACTIVE_STORAGE_SERVICE=local ## use s3_compatible para MinIO
+
+    ## 📧 Dados do SMTP
+      - MAILER_SENDER_EMAIL=soporte@ejemplo.com <soporte@ejemplo.com> ## Email remitente
+      - SMTP_DOMAIN=ejemplo.com ## Dominio del email
+      - SMTP_ADDRESS=smtp.ejemplo.net ## Host SMTP
+      - SMTP_PORT=465 ## Puerto SMTP
+      - SMTP_SSL=true ## true si usas 465 (SSL) | false si usas 587 (STARTTLS)
+      - SMTP_USERNAME=soporte@ejemplo.com ## Usuario SMTP
+      - SMTP_PASSWORD=MyS3gur0P@ssw0rd! ## Contraseña ficticia SMTP
+      - SMTP_AUTHENTICATION=login ## Tipo de autenticación
+      - SMTP_ENABLE_STARTTLS_AUTO=true ## Se usa cuando el puerto es 587
+      - SMTP_OPENSSL_VERIFY_MODE=peer ## Verificación de certificado SSL
+      - MAILER_INBOUND_EMAIL_DOMAIN=soporte@ejemplo.com ## Dominio para inbound
+
+    ## ⚙️ Melhorias
+      - SIDEKIQ_CONCURRENCY=2
+      - SIDEKIQ_WHATSAPP_HISTORY_CONCURRENCY=2
+      - RACK_TIMEOUT_SERVICE_TIMEOUT=0
+      - RAILS_MAX_THREADS=2
+      - ENABLE_RACK_ATTACK=false
+      - EVENT_DISPATCHER_IN_MAIN_SIDEKIQ=false
+      - WHATSAPP_HISTORY_SYNC_IN_MAIN_SIDEKIQ=false
+
+    ## ⚡ Outras configurações
+      - NODE_ENV=production
+      - RAILS_ENV=production
+      - INSTALLATION_ENV=docker
+      - RAILS_LOG_TO_STDOUT=true
+      - USE_INBOX_AVATAR_FOR_BOT=true
+      - ENABLE_ACCOUNT_SIGNUP=false
+      - WEBHOOKS_TRIGGER_TIMEOUT=40
+      - EVOLUTION_API_URL=https://api.evolution.example.com
+      - EVOLUTION_ADMIN_TOKEN=exampletoken1234567890
+      - EVOLUTION_PUBLIC_S3=false
+      - WAHA_API_URL=https://waha.example.com
+      - WAHA_ADMIN_TOKEN=exampletoken1234567890
+      - UAZAPI_API_URL=https://demo.uazapi.com
+      - UAZAPI_ADMIN_TOKEN=exampletoken1234567890
+      - SSO=false
+
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1024M
+
+## --------------------------- SIDEKIQ WORKER 4 – WHATSAPP --------------------------- ##
+## Procesa webhooks entrantes de WhatsApp con capacidad dedicada para
+## que campañas y tareas de baja prioridad no retrasen mensajes.
+## Colas: whatsapp
+## ------------------------------------------------------------------------------- ##
+
+  chatwoot_sidekiq_whatsapp:
+    image: sendingtk/chatwoot:v4.20.6 ## Versão do Chatwoot
+    command: bundle exec sidekiq -q whatsapp -c 10
+
+    volumes:
+      - chatwoot_storage:/app/storage ## Arquivos de conversa
+
+    networks:
+      - mired ## Nome da rede interna
+
+    environment:
+      - INSTALLATION_NAME=mega
+      - SECRET_KEY_BASE=ca68dcd674b1e9e460671be221c30f30
+      - FRONTEND_URL=https://mega.dominio.com
+      - FORCE_SSL=true
+      - DEFAULT_LOCALE=pt_BR
+      - TZ=America/Sao_Paulo
+      - REDIS_URL=redis://chatwoot_redis:6379
+      - POSTGRES_HOST=pgvector
+      - POSTGRES_USERNAME=postgres
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DATABASE=chatwoot
+      - ACTIVE_STORAGE_SERVICE=local
+      - MAILER_SENDER_EMAIL=soporte@ejemplo.com <soporte@ejemplo.com>
+      - SMTP_DOMAIN=ejemplo.com
+      - SMTP_ADDRESS=smtp.ejemplo.net
+      - SMTP_PORT=465
+      - SMTP_SSL=true
+      - SMTP_USERNAME=soporte@ejemplo.com
+      - SMTP_PASSWORD=MyS3gur0P@ssw0rd!
+      - SMTP_AUTHENTICATION=login
+      - SMTP_ENABLE_STARTTLS_AUTO=true
+      - SMTP_OPENSSL_VERIFY_MODE=peer
+      - MAILER_INBOUND_EMAIL_DOMAIN=soporte@ejemplo.com
+      - SIDEKIQ_CONCURRENCY=10
+      - SIDEKIQ_WHATSAPP_CONCURRENCY=10
+      - RACK_TIMEOUT_SERVICE_TIMEOUT=0
+      - RAILS_MAX_THREADS=10
+      - ENABLE_RACK_ATTACK=false
+      - EVENT_DISPATCHER_IN_MAIN_SIDEKIQ=false
+      - WHATSAPP_HISTORY_SYNC_IN_MAIN_SIDEKIQ=false
+      - NODE_ENV=production
+      - RAILS_ENV=production
+      - INSTALLATION_ENV=docker
+      - RAILS_LOG_TO_STDOUT=true
+      - USE_INBOX_AVATAR_FOR_BOT=true
+      - ENABLE_ACCOUNT_SIGNUP=false
+      - WEBHOOKS_TRIGGER_TIMEOUT=40
+      - EVOLUTION_API_URL=https://api.evolution.example.com
+      - EVOLUTION_ADMIN_TOKEN=exampletoken1234567890
+      - EVOLUTION_PUBLIC_S3=false
+      - WAHA_API_URL=https://waha.example.com
+      - WAHA_ADMIN_TOKEN=exampletoken1234567890
+      - UAZAPI_API_URL=https://demo.uazapi.com
+      - UAZAPI_ADMIN_TOKEN=exampletoken1234567890
+      - SSO=false
+
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1024M
+
+## --------------------------- SIDEKIQ WORKER 5 – MEDIUM --------------------------- ##
+## Procesa: envío de emails, routing de action_mailbox,
+## mensajes programados y tareas de prioridad media.
+## Colas: medium, mailers, action_mailbox_routing, scheduled_messages
+## ------------------------------------------------------------------------------- ##
+
+  chatwoot_sidekiq_medium:
+    image: sendingtk/chatwoot:v4.20.6 ## Versão do Chatwoot
+    command: bundle exec sidekiq -q medium -q mailers -q action_mailbox_routing -q scheduled_messages -c 10
+
+    volumes:
+      - chatwoot_storage:/app/storage ## Arquivos de conversa
+
+    networks:
+      - mired ## Nome da rede interna
+
+    environment:
+    ## 🏢 Nome da Empresa
+      - INSTALLATION_NAME=mega
+
+    ## 🔐 Secret key
+      - SECRET_KEY_BASE=ca68dcd674b1e9e460671be221c30f30
+
+    ## 💬 Url Chatwoot
+      - FRONTEND_URL=https://mega.dominio.com
+      - FORCE_SSL=true
+
+    ## 🌍 Idioma/Localização padrão
+      - DEFAULT_LOCALE=pt_BR
+      - TZ=America/Sao_Paulo
+
+    ## 🧑‍💻 Dados do Redis
+      - REDIS_URL=redis://chatwoot_redis:6379
+
+    ## 🗄️ Dados do Postgres
+      - POSTGRES_HOST=pgvector
+      - POSTGRES_USERNAME=postgres
+      - POSTGRES_PASSWORD=password ## Senha do postgres
+      - POSTGRES_DATABASE=chatwoot
+
+    ## 🏠 Armazenamento
+      - ACTIVE_STORAGE_SERVICE=local ## use s3_compatible para MinIO
+
+    ## 📧 Dados do SMTP
+      - MAILER_SENDER_EMAIL=soporte@ejemplo.com <soporte@ejemplo.com> ## Email remitente
+      - SMTP_DOMAIN=ejemplo.com ## Dominio del email
+      - SMTP_ADDRESS=smtp.ejemplo.net ## Host SMTP
+      - SMTP_PORT=465 ## Puerto SMTP
+      - SMTP_SSL=true ## true si usas 465 (SSL) | false si usas 587 (STARTTLS)
+      - SMTP_USERNAME=soporte@ejemplo.com ## Usuario SMTP
+      - SMTP_PASSWORD=MyS3gur0P@ssw0rd! ## Contraseña ficticia SMTP
+      - SMTP_AUTHENTICATION=login ## Tipo de autenticación
+      - SMTP_ENABLE_STARTTLS_AUTO=true ## Se usa cuando el puerto es 587
+      - SMTP_OPENSSL_VERIFY_MODE=peer ## Verificación de certificado SSL
+      - MAILER_INBOUND_EMAIL_DOMAIN=soporte@ejemplo.com ## Dominio para inbound
+
+    ## ⚙️ Melhorias
+      - SIDEKIQ_CONCURRENCY=10
+      - RACK_TIMEOUT_SERVICE_TIMEOUT=0
+      - RAILS_MAX_THREADS=10
+      - ENABLE_RACK_ATTACK=false
+
+    ## ⚡ Outras configurações
+      - NODE_ENV=production
+      - RAILS_ENV=production
+      - INSTALLATION_ENV=docker
+      - RAILS_LOG_TO_STDOUT=true
+      - USE_INBOX_AVATAR_FOR_BOT=true
+      - ENABLE_ACCOUNT_SIGNUP=false
+      - WEBHOOKS_TRIGGER_TIMEOUT=40
+      - EVOLUTION_API_URL=https://api.evolution.example.com
+      - EVOLUTION_ADMIN_TOKEN=exampletoken1234567890
+      - EVOLUTION_PUBLIC_S3=false
+      - WAHA_API_URL=https://waha.example.com
+      - WAHA_ADMIN_TOKEN=exampletoken1234567890
+      - UAZAPI_API_URL=https://demo.uazapi.com
+      - UAZAPI_ADMIN_TOKEN=exampletoken1234567890
+      - SSO=false
+
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 768M
+
+## --------------------------- SIDEKIQ WORKER 6 – LOW --------------------------- ##
+## Procesa: tareas programadas, limpieza, migraciones async,
+## reindexación, análisis/purga de active_storage, incineración de mailbox.
+## Estas tareas toleran mayor latencia.
+## Colas: low, scheduled_jobs, deferred, purgable, housekeeping,
+##        async_database_migration, bulk_reindex_low,
+##        active_storage_analysis, active_storage_purge, action_mailbox_incineration
+## ------------------------------------------------------------------------------- ##
+
+  chatwoot_sidekiq_low:
+    image: sendingtk/chatwoot:v4.20.6 ## Versão do Chatwoot
+    command: bundle exec sidekiq -q low -q scheduled_jobs -q deferred -q purgable -q housekeeping -q async_database_migration -q bulk_reindex_low -q active_storage_analysis -q active_storage_purge -q action_mailbox_incineration -c 10
+
+    volumes:
+      - chatwoot_storage:/app/storage ## Arquivos de conversa
+
+    networks:
+      - mired ## Nome da rede interna
+
+    environment:
+    ## 🏢 Nome da Empresa
+      - INSTALLATION_NAME=mega
+
+    ## 🔐 Secret key
+      - SECRET_KEY_BASE=ca68dcd674b1e9e460671be221c30f30
+
+    ## 💬 Url Chatwoot
+      - FRONTEND_URL=https://mega.dominio.com
+      - FORCE_SSL=true
+
+    ## 🌍 Idioma/Localização padrão
+      - DEFAULT_LOCALE=pt_BR
+      - TZ=America/Sao_Paulo
+
+    ## 🧑‍💻 Dados do Redis
+      - REDIS_URL=redis://chatwoot_redis:6379
+
+    ## 🗄️ Dados do Postgres
+      - POSTGRES_HOST=pgvector
+      - POSTGRES_USERNAME=postgres
+      - POSTGRES_PASSWORD=password ## Senha do postgres
+      - POSTGRES_DATABASE=chatwoot
+
+    ## 🏠 Armazenamento
+      - ACTIVE_STORAGE_SERVICE=local ## use s3_compatible para MinIO
+
+    ## 📧 Dados do SMTP
+      - MAILER_SENDER_EMAIL=soporte@ejemplo.com <soporte@ejemplo.com> ## Email remitente
+      - SMTP_DOMAIN=ejemplo.com ## Dominio del email
+      - SMTP_ADDRESS=smtp.ejemplo.net ## Host SMTP
+      - SMTP_PORT=465 ## Puerto SMTP
+      - SMTP_SSL=true ## true si usas 465 (SSL) | false si usas 587 (STARTTLS)
+      - SMTP_USERNAME=soporte@ejemplo.com ## Usuario SMTP
+      - SMTP_PASSWORD=MyS3gur0P@ssw0rd! ## Contraseña ficticia SMTP
+      - SMTP_AUTHENTICATION=login ## Tipo de autenticación
+      - SMTP_ENABLE_STARTTLS_AUTO=true ## Se usa cuando el puerto es 587
+      - SMTP_OPENSSL_VERIFY_MODE=peer ## Verificación de certificado SSL
+      - MAILER_INBOUND_EMAIL_DOMAIN=soporte@ejemplo.com ## Dominio para inbound
+
+    ## ⚙️ Melhorias
+      - SIDEKIQ_CONCURRENCY=10
+      - RACK_TIMEOUT_SERVICE_TIMEOUT=0
+      - RAILS_MAX_THREADS=10
+      - ENABLE_RACK_ATTACK=false
+
+    ## ⚡ Outras configurações
+      - NODE_ENV=production
+      - RAILS_ENV=production
+      - INSTALLATION_ENV=docker
+      - RAILS_LOG_TO_STDOUT=true
+      - USE_INBOX_AVATAR_FOR_BOT=true
+      - ENABLE_ACCOUNT_SIGNUP=false
+      - WEBHOOKS_TRIGGER_TIMEOUT=40
+      - EVOLUTION_API_URL=https://api.evolution.example.com
+      - EVOLUTION_ADMIN_TOKEN=exampletoken1234567890
+      - EVOLUTION_PUBLIC_S3=false
+      - WAHA_API_URL=https://waha.example.com
+      - WAHA_ADMIN_TOKEN=exampletoken1234567890
+      - UAZAPI_API_URL=https://demo.uazapi.com
+      - UAZAPI_ADMIN_TOKEN=exampletoken1234567890
+      - SSO=false
+
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
+## --------------------------- REDIS --------------------------- ##
+
+  chatwoot_redis:
+    image: redis:7.4.2
+    command: [
+        "redis-server",
+        "--port",
+        "6379",
+        # Memoria — dejar 512MB+ de overhead para el proceso
+        "--maxmemory",
+        "1536mb",
+        "--maxmemory-policy",
+        "noeviction",
+        # Persistencia mínima para Sidekiq (protege jobs encolados)
+        "--appendonly",
+        "yes",
+        "--appendfsync",
+        "everysec",
+        "--auto-aof-rewrite-percentage",
+        "100",
+        "--auto-aof-rewrite-min-size",
+        "64mb",
+        "--save",
+        "",
+        # Conexiones
+        "--tcp-backlog",
+        "511",
+        "--timeout",
+        "300",
+        "--tcp-keepalive",
+        "60",
+        "--maxclients",
+        "10000",
+        # Diagnósticos (esenciales para troubleshooting)
+        "--slowlog-log-slower-than",
+        "10000",
+        "--slowlog-max-len",
+        "128",
+        "--latency-monitor-threshold",
+        "100",
+        # NO usar io-threads con 1 CPU
+        # "--io-threads", "4",
+        # "--io-threads-do-reads", "yes",
+        # Rendimiento
+        "--hz",
+        "50",
+        "--dynamic-hz",
+        "yes",
+        "--activedefrag",
+        "yes",
+      ]
+    networks:
+      - mired ## Nome da rede interna
+    volumes:
+      - mega_redis_data:/data
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2560M
+        reservations:
+          memory: 1024M
+
+## --------------------------- VOLUMES & REDES --------------------------- ##
+
+volumes:
+  chatwoot_storage:
+    external: true
+    name: chatwoot_storage
+
+  mega_redis_data:
+    external: true
+    name: mega_redis_data
+
+networks:
+  mired: ## Nome da rede interna
+    external: true
+    name: mired ## Nome da rede interna

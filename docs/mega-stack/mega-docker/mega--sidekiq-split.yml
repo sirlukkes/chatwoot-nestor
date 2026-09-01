@@ -1,0 +1,403 @@
+##############
+#
+# Execute o mando para migrar o banco:
+#
+# bundle exec rails db:chatwoot_prepare
+#
+# Sidekiq dividido en 6 workers:
+#   Worker 1 (critical): critical, high, default
+#   Worker 2 (events):   events
+#   Worker 3 (whatsapp history): whatsapp_history_sync
+#   Worker 4 (whatsapp): whatsapp
+#   Worker 5 (medium):   medium, mailers, action_mailbox_routing, scheduled_messages
+#   Worker 6 (low):      low, scheduled_jobs, deferred, purgable, housekeeping,
+#                         async_database_migration, bulk_reindex_low,
+#                         active_storage_analysis, active_storage_purge,
+#                         action_mailbox_incineration
+#
+#############
+
+x-variables:
+  &default_env
+  INSTALLATION_NAME: ExampleChat
+  NODE_ENV: production
+  RAILS_ENV: production
+  INSTALLATION_ENV: docker
+  SECRET_KEY_BASE: changemeexamplekey
+  FRONTEND_URL: https://app.example.com
+  DEFAULT_LOCALE: en
+  FORCE_SSL: "true"
+  ENABLE_ACCOUNT_SIGNUP: "false"
+  REDIS_URL: redis://example_redis:6379
+  POSTGRES_HOST: 123.123.123.123
+  POSTGRES_PORT: 5432
+  POSTGRES_USERNAME: postgres
+  POSTGRES_PASSWORD: examplepassword
+  POSTGRES_DATABASE: examplechat
+  ACTIVE_STORAGE_SERVICE: local
+  # Uncomment the following lines to use Amazon S3 for Active Storage
+  # ACTIVE_STORAGE_SERVICE: amazon
+  # S3_BUCKET_NAME: examplechat.bucket
+  # AWS_ACCESS_KEY_ID: EXAMPLEKEY123456
+  # AWS_SECRET_ACCESS_KEY: EXAMPLESECRET456789
+  # AWS_REGION: us-east-1
+
+  #set force_path_style to true if using minio
+  # ACTIVE_STORAGE_SERVICE=s3_compatible
+  # STORAGE_BUCKET_NAME=
+  # STORAGE_ACCESS_KEY_ID=
+  # STORAGE_SECRET_ACCESS_KEY=
+  # STORAGE_REGION=nyc3
+  # STORAGE_ENDPOINT=https://nyc3.digitaloceanspaces.com
+  #set force_path_style to true if using minio
+  #STORAGE_FORCE_PATH_STYLE=true
+
+  DIRECT_UPLOADS_ENABLED: "true"
+  RAILS_LOG_TO_STDOUT: "true"
+  USE_INBOX_AVATAR_FOR_BOT: "true"
+  MAILER_SENDER_EMAIL: ExampleChat <noreply@example.com>
+  SMTP_DOMAIN: smtp.example.com
+  SMTP_ADDRESS: smtp.example.com
+  SMTP_PORT: 587
+  SMTP_USERNAME: noreply@example.com
+  SMTP_PASSWORD: smtpexamplepassword
+  SMTP_AUTHENTICATION: login
+  SMTP_ENABLE_STARTTLS_AUTO: "true"
+  SMTP_OPENSSL_VERIFY_MODE: peer
+  MAILER_INBOUND_EMAIL_DOMAIN: example.com
+  WEB_CONCURRENCY: 2
+  RACK_TIMEOUT_SERVICE_TIMEOUT: 0
+  ENABLE_RACK_ATTACK: "false"
+  EVENT_DISPATCHER_IN_MAIN_SIDEKIQ: "false"
+  WHATSAPP_HISTORY_SYNC_IN_MAIN_SIDEKIQ: "false"
+  TZ: UTC
+  ENABLE_PUSH_RELAY_SERVER: "true"
+  WEBHOOKS_TRIGGER_TIMEOUT: 40
+  EVOLUTION_API_URL: https://api.evolution.example.com
+  EVOLUTION_ADMIN_TOKEN: exampletoken1234567890
+  EVOLUTION_PUBLIC_S3: "false"
+  WAHA_API_URL: https://waha.example.com
+  WAHA_ADMIN_TOKEN: exampletoken1234567890
+  UAZAPI_API_URL: https://demo.uazapi.com
+  UAZAPI_ADMIN_TOKEN: exampletoken1234567890
+  # SSO activation login
+  SSO: "false"
+
+services:
+  mega_app:
+    image: sendingtk/chatwoot:v4.20.6
+    command: bundle exec rails s -p 3000 -b 0.0.0.0
+    entrypoint: docker/entrypoints/rails.sh
+    restart: always
+    volumes:
+      - examplechat_dat:/app/storage
+      ## Branding assets
+      # - /opt/branding/mega/manifest.json:/app/public/manifest.json
+      # - /opt/branding/mega/favicon.ico:/app/public/favicon.ico
+      # - /opt/branding/mega/android-icon-192x192.png:/app/public/android-icon-192x192.png
+      # - /opt/branding/mega/apple-icon-57x57.png:/app/public/apple-icon-57x57.png
+      # - /opt/branding/mega/apple-icon-60x60.png:/app/public/apple-icon-60x60.png
+      # - /opt/branding/mega/apple-icon-72x72.png:/app/public/apple-icon-72x72.png
+      # - /opt/branding/mega/apple-icon-76x76.png:/app/public/apple-icon-76x76.png
+      # - /opt/branding/mega/apple-icon-114x114.png:/app/public/apple-icon-114x114.png
+      # - /opt/branding/mega/apple-icon-120x120.png:/app/public/apple-icon-120x120.png
+      # - /opt/branding/mega/apple-icon-144x144.png:/app/public/apple-icon-144x144.png
+      # - /opt/branding/mega/apple-icon-152x152.png:/app/public/apple-icon-152x152.png
+      # - /opt/branding/mega/apple-icon-180x180.png:/app/public/apple-icon-180x180.png
+      # - /opt/branding/mega/favicon-16x16.png:/app/public/favicon-16x16.png
+      # - /opt/branding/mega/favicon-32x32.png:/app/public/favicon-32x32.png
+      # - /opt/branding/mega/favicon-96x96.png:/app/public/favicon-96x96.png
+      # - /opt/branding/mega/favicon-badge-16x16.png:/app/public/favicon-badge-16x16.png
+      # - /opt/branding/mega/favicon-badge-32x32.png:/app/public/favicon-badge-32x32.png
+      # - /opt/branding/mega/favicon-badge-96x96.png:/app/public/favicon-badge-96x96.png
+      # - /opt/branding/mega/brand-assets/logo.svg:/app/public/brand-assets/logo.svg
+      # - /opt/branding/mega/brand-assets/logo_dark.svg:/app/public/brand-assets/logo_dark.svg
+      # - /opt/branding/mega/brand-assets/logo_thumbnail.svg:/app/public/brand-assets/logo_thumbnail.svg
+      # - /opt/branding/mega/brand-assets/logo_thumbnail_dark.svg:/app/public/brand-assets/logo_thumbnail_dark.svg
+    networks:
+      - examplenet
+    environment:
+      <<: *default_env
+    deploy:
+      mode: replicated
+      replicas: 2
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: "3"
+          memory: 2048M
+      labels:
+        - traefik.enable=true
+        - traefik.http.routers.example_app.rule=Host(`app.example.com`)
+        - traefik.http.routers.example_app.entrypoints=websecure
+        - traefik.http.routers.mega_app.tls.certresolver=letsencryptresolver
+        - traefik.http.routers.mega_app.priority=1
+        - traefik.http.routers.mega_app.service=mega_app
+        - traefik.http.services.mega_app.loadbalancer.server.port=3000
+        - traefik.http.services.mega_app.loadbalancer.passHostHeader=true
+        - traefik.http.routers.mega_app.middlewares=sslheader
+        - traefik.http.middlewares.sslheader.headers.customrequestheaders.X-Forwarded-Proto=https
+
+  ##############################################################
+  # SIDEKIQ WORKER 1 – CRITICAL
+  # Colas: critical, high, default
+  # Procesa: mensajes en tiempo real, enrutamiento de
+  # conversaciones, webhooks entrantes y asignaciones.
+  # EventDispatcherJob queda aislado en el worker events.
+  ##############################################################
+  mega_sidekiq_critical:
+    image: sendingtk/chatwoot:v4.20.6
+    command: bundle exec sidekiq -q critical -q high -q default -c 15
+    restart: always
+    networks:
+      - examplenet
+    volumes:
+      - examplechat_dat:/app/storage
+    environment:
+      <<: *default_env
+      SIDEKIQ_CONCURRENCY: 15
+      RAILS_MAX_THREADS: 15
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2048M
+
+  ##############################################################
+  # SIDEKIQ WORKER 2 – EVENTS
+  # Colas: events
+  # Procesa: EventDispatcherJob (webhooks salientes,
+  # automations, notifications, reporting y campañas) fuera de
+  # critical para no bloquear el realtime del UI.
+  ##############################################################
+  mega_sidekiq_events:
+    image: sendingtk/chatwoot:v4.20.6
+    command: bundle exec sidekiq -q events -c 10
+    restart: always
+    networks:
+      - examplenet
+    volumes:
+      - examplechat_dat:/app/storage
+    environment:
+      <<: *default_env
+      SIDEKIQ_CONCURRENCY: 10
+      SIDEKIQ_EVENTS_CONCURRENCY: 10
+      RAILS_MAX_THREADS: 10
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1024M
+
+  ##############################################################
+  # SIDEKIQ WORKER 3 – WHATSAPP HISTORY
+  # Colas: whatsapp_history_sync
+  # Procesa: importaciones históricas pesadas de WhatsApp y
+  # descargas de media histórica, con baja concurrencia para no
+  # saturar DB/Redis durante sincronizaciones grandes.
+  ##############################################################
+  mega_sidekiq_whatsapp_history:
+    image: sendingtk/chatwoot:v4.20.6
+    command: bundle exec sidekiq -q whatsapp_history_sync -c 2
+    restart: always
+    networks:
+      - examplenet
+    volumes:
+      - examplechat_dat:/app/storage
+    environment:
+      <<: *default_env
+      SIDEKIQ_CONCURRENCY: 2
+      SIDEKIQ_WHATSAPP_HISTORY_CONCURRENCY: 2
+      RAILS_MAX_THREADS: 2
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1024M
+
+  ##############################################################
+  # SIDEKIQ WORKER 4 – WHATSAPP
+  # Colas: whatsapp
+  # Procesa: webhooks entrantes de WhatsApp con capacidad dedicada
+  # para que campañas y tareas de baja prioridad no retrasen mensajes.
+  ##############################################################
+  mega_sidekiq_whatsapp:
+    image: sendingtk/chatwoot:v4.20.6
+    command: bundle exec sidekiq -q whatsapp -c 10
+    restart: always
+    networks:
+      - examplenet
+    volumes:
+      - examplechat_dat:/app/storage
+    environment:
+      <<: *default_env
+      SIDEKIQ_CONCURRENCY: 10
+      SIDEKIQ_WHATSAPP_CONCURRENCY: 10
+      RAILS_MAX_THREADS: 10
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1024M
+
+  ##############################################################
+  # SIDEKIQ WORKER 5 – MEDIUM
+  # Colas: medium, mailers, action_mailbox_routing, scheduled_messages
+  # Procesa: envío de emails, routing de action_mailbox,
+  # mensajes programados y tareas de prioridad media.
+  ##############################################################
+  mega_sidekiq_medium:
+    image: sendingtk/chatwoot:v4.20.6
+    command: bundle exec sidekiq -q medium -q mailers -q action_mailbox_routing -q scheduled_messages -c 10
+    restart: always
+    networks:
+      - examplenet
+    volumes:
+      - examplechat_dat:/app/storage
+    environment:
+      <<: *default_env
+      SIDEKIQ_CONCURRENCY: 10
+      RAILS_MAX_THREADS: 10
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1024M
+
+  ##############################################################
+  # SIDEKIQ WORKER 6 – LOW
+  # Colas: low, scheduled_jobs, deferred, purgable, housekeeping,
+  #        async_database_migration, bulk_reindex_low,
+  #        active_storage_analysis, active_storage_purge,
+  #        action_mailbox_incineration
+  # Procesa: tareas programadas, limpieza, migraciones async,
+  # reindexación, análisis/purga de active_storage, incineración
+  # de mailbox. Toleran mayor latencia.
+  ##############################################################
+  mega_sidekiq_low:
+    image: sendingtk/chatwoot:v4.20.6
+    command: bundle exec sidekiq -q low -q scheduled_jobs -q deferred -q purgable -q housekeeping -q async_database_migration -q bulk_reindex_low -q active_storage_analysis -q active_storage_purge -q action_mailbox_incineration -c 10
+    restart: always
+    networks:
+      - examplenet
+    volumes:
+      - examplechat_dat:/app/storage
+    environment:
+      <<: *default_env
+      SIDEKIQ_CONCURRENCY: 10
+      RAILS_MAX_THREADS: 10
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1024M
+
+  example_redis:
+    image: redis:7.4.2
+    command: [
+        "redis-server",
+        "--port",
+        "6379",
+        # Memoria — dejar 512MB+ de overhead para el proceso
+        "--maxmemory",
+        "1536mb",
+        "--maxmemory-policy",
+        "noeviction",
+        # Persistencia mínima para Sidekiq (protege jobs encolados)
+        "--appendonly",
+        "yes",
+        "--appendfsync",
+        "everysec",
+        "--auto-aof-rewrite-percentage",
+        "100",
+        "--auto-aof-rewrite-min-size",
+        "64mb",
+        "--save",
+        "",
+        # Conexiones
+        "--tcp-backlog",
+        "511",
+        "--timeout",
+        "300",
+        "--tcp-keepalive",
+        "60",
+        "--maxclients",
+        "10000",
+        # Diagnósticos (esenciales para troubleshooting)
+        "--slowlog-log-slower-than",
+        "10000",
+        "--slowlog-max-len",
+        "128",
+        "--latency-monitor-threshold",
+        "100",
+        # NO usar io-threads con 1 CPU
+        # "--io-threads", "4",
+        # "--io-threads-do-reads", "yes",
+        # Rendimiento
+        "--hz",
+        "50",
+        "--dynamic-hz",
+        "yes",
+        "--activedefrag",
+        "yes",
+      ]
+    networks:
+      - examplenet
+    volumes:
+      - mega_redis_data:/data
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2560M
+        reservations:
+          memory: 1024M
+
+volumes:
+  examplechat_dat:
+    external: true
+    name: examplechat_dat
+
+  mega_redis_data:
+    external: true
+    name: mega_redis_data
+
+networks:
+  examplenet:
+    external: true
+    name: examplenet
